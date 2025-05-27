@@ -3,17 +3,19 @@ import pandas as pd
 import requests
 import ta
 import plotly.graph_objects as go
+import urllib.parse
 
 API_KEY = st.secrets["TWELVE_DATA_API_KEY"] if "TWELVE_DATA_API_KEY" in st.secrets else ""
 
-# API szimbólumok (perjel nélkül)
-FOREX_PAIRS_API = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD"]
-# Felhasználónak megjelenő formátum
+# Forex párok a Twelve Data API dokumentáció szerint perjellel
+FOREX_PAIRS_API = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD"]
+# Felhasználónak megjelenő formátum (ez most megegyezik az API-val)
 FOREX_PAIRS_DISPLAY = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD"]
 
 @st.cache_data(ttl=300)
-def load_forex_data(symbol="EURUSD"):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=5min&apikey={API_KEY}&format=JSON&outputsize=100"
+def load_forex_data(symbol="EUR/USD"):
+    symbol_encoded = urllib.parse.quote(symbol)  # Pl. "USD/JPY" -> "USD%2FJPY"
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol_encoded}&interval=5min&apikey={API_KEY}&format=JSON&outputsize=100"
     response = requests.get(url)
 
     if response.status_code != 200:
