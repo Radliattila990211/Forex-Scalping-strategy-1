@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 API_KEY = st.secrets["TWELVE_DATA_API_KEY"] if "TWELVE_DATA_API_KEY" in st.secrets else "IDE_ÍRD_BE_A_TWELVE_DATA_API_KULCSODAT"
 
 FOREX_PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-    "AUD/USD", "USD/CAD"
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
+    "AUDUSD", "USDCAD"
 ]
 
 @st.cache_data(ttl=300)
