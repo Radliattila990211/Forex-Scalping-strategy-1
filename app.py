@@ -7,14 +7,12 @@ import urllib.parse
 
 API_KEY = st.secrets["TWELVE_DATA_API_KEY"] if "TWELVE_DATA_API_KEY" in st.secrets else ""
 
-# Forex párok a Twelve Data API dokumentáció szerint perjellel
 FOREX_PAIRS_API = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD"]
-# Felhasználónak megjelenő formátum (ez most megegyezik az API-val)
 FOREX_PAIRS_DISPLAY = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD"]
 
 @st.cache_data(ttl=300)
 def load_forex_data(symbol="EUR/USD"):
-    symbol_encoded = urllib.parse.quote(symbol)  # Pl. "USD/JPY" -> "USD%2FJPY"
+    symbol_encoded = urllib.parse.quote(symbol)  # URL-encode pl. "USD/JPY" -> "USD%2FJPY"
     url = f"https://api.twelvedata.com/time_series?symbol={symbol_encoded}&interval=5min&apikey={API_KEY}&format=JSON&outputsize=100"
     response = requests.get(url)
 
@@ -31,9 +29,10 @@ def load_forex_data(symbol="EUR/USD"):
 
     df = pd.DataFrame(data["values"])
 
-    expected_cols = {"datetime", "open", "high", "low", "close", "volume"}
-    if not expected_cols.issubset(df.columns):
-        st.error(f"Hiányzó adat oszlopok az API válaszában: {expected_cols - set(df.columns)}")
+    expected_cols = {"datetime", "open", "high", "low", "close"}
+    missing_cols = expected_cols - set(df.columns)
+    if missing_cols:
+        st.error(f"Hiányzó adat oszlopok az API válaszában: {missing_cols}")
         return None
 
     df = df.rename(columns={
@@ -42,13 +41,16 @@ def load_forex_data(symbol="EUR/USD"):
         "high": "high",
         "low": "low",
         "close": "close",
-        "volume": "volume"
     })
+
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date').reset_index(drop=True)
 
-    for col in ["open", "high", "low", "close", "volume"]:
+    for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    if "volume" in df.columns:
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
 
     return df
 
