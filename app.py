@@ -177,4 +177,4 @@ def main():
         st.error(f"Hiba történt: {e}")
 
 if __name__ == "__main__":
-    main()q
+    main()
