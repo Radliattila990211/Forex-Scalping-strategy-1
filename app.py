@@ -2,11 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import datetime
+from ta.trend import ADXIndicator
 import plotly.graph_objects as go
-from ta.trend import ADXIndicator, MACD
-from ta.volatility import BollingerBands
-from ta.momentum import RSIIndicator
 
 # ---------------------------- BEÁLLÍTÁSOK ----------------------------
 API_KEY = "bb8600ae3e1b41acac22ce8558f5e2e1"
@@ -16,9 +13,9 @@ SYMBOLS = [
 ]
 INTERVALS = {"5 perc": "5min", "15 perc": "15min"}
 
-TP_PCT = 0.008  # Take Profit 0.8%
-SL_PCT = 0.005  # Stop Loss 0.5%
-ADX_THRESHOLD = 20  # ADX threshold
+# Telegram bot beállítások (ide tedd a sajátodat)
+TELEGRAM_BOT_TOKEN = "IDE_ÍRD_A_BOT_TOKENED"
+TELEGRAM_CHAT_ID = "IDE_ÍRD_A_CHAT_ID"
 
 # ---------------------------- ADATBETÖLTÉS ----------------------------
 @st.cache_data(ttl=300)
@@ -38,95 +35,115 @@ def load_data(symbol, interval):
 
 # ---------------------------- TECHNIKAI INDIKÁTOROK ----------------------------
 def compute_indicators(df):
-    df["EMA8"] = df["close"].ewm(span=8, adjust=False).mean()
-    df["EMA21"] = df["close"].ewm(span=21, adjust=False).mean()
+    df["EMA8"] = df["close"].ewm(span=8).mean()
+    df["EMA21"] = df["close"].ewm(span=21).mean()
 
-    rsi_ind = RSIIndicator(close=df["close"], window=14)
-    df["RSI"] = rsi_ind.rsi()
+    delta = df["close"].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
 
-    macd_ind = MACD(close=df["close"], window_slow=26, window_fast=12, window_sign=9)
-    df["MACD"] = macd_ind.macd()
-    df["Signal"] = macd_ind.macd_signal()
-    df["MACD_Hist"] = macd_ind.macd_diff()
+    exp1 = df["close"].ewm(span=12, adjust=False).mean()
+    exp2 = df["close"].ewm(span=26, adjust=False).mean()
+    df["MACD"] = exp1 - exp2
+    df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+    df["MACD_Hist"] = df["MACD"] - df["Signal"]
 
-    adx_ind = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=14)
-    df["ADX"] = adx_ind.adx()
-
-    bb = BollingerBands(close=df["close"], window=20, window_dev=2)
-    df["BB_High"] = bb.bollinger_hband()
-    df["BB_Low"] = bb.bollinger_lband()
-    df["BB_Mid"] = bb.bollinger_mavg()
+    adx = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=14)
+    df["ADX"] = adx.adx()
 
     return df
 
+# ---------------------------- BOLLINGER BAND ----------------------------
+def compute_bollinger(df, window=20, n_std=2):
+    df["BB_Middle"] = df["close"].rolling(window).mean()
+    df["BB_Std"] = df["close"].rolling(window).std()
+    df["BB_Upper"] = df["BB_Middle"] + n_std * df["BB_Std"]
+    df["BB_Lower"] = df["BB_Middle"] - n_std * df["BB_Std"]
+    return df
+
+# ---------------------------- TELEGRAM ÜZENET KÜLDÉS ----------------------------
+def send_telegram_message(bot_token, chat_id, message):
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        response = requests.post(url, data=payload)
+        return response.ok
+    except Exception as e:
+        print("Telegram üzenet küldési hiba:", e)
+        return False
+
 # ---------------------------- SZIGNÁL GENERÁLÁS + TP/SL ÉRTÉKELÉS ----------------------------
 def generate_signals(df):
-    df["Buy"] = False
-    df["Sell"] = False
+    TP_PCT = 0.008  # 0.8%
+    SL_PCT = 0.005  # 0.5%
+    LOOKAHEAD = 15  # gyertyaszám a TP/SL vizsgálathoz
+
+    # Vételi jel: EMA8 > EMA21, RSI < 70, MACD_Hist pozitív, ADX > 20, close közel a BB alsó szalaghoz (pl. < BB_Lower + kis buffer)
+    df["Buy"] = (
+        (df["EMA8"] > df["EMA21"]) &
+        (df["RSI"] < 70) &
+        (df["MACD_Hist"] > 0) &
+        (df["ADX"] > 20) &
+        (df["close"] < df["BB_Lower"] * 1.02)
+    )
+
+    # Eladási jel: EMA8 < EMA21, RSI > 30, MACD_Hist negatív, ADX > 20, close közel a BB felső szalaghoz (pl. > BB_Upper - kis buffer)
+    df["Sell"] = (
+        (df["EMA8"] < df["EMA21"]) &
+        (df["RSI"] > 30) &
+        (df["MACD_Hist"] < 0) &
+        (df["ADX"] > 20) &
+        (df["close"] > df["BB_Upper"] * 0.98)
+    )
+
     df["TP"] = np.nan
     df["SL"] = np.nan
     df["Eredmény"] = ""
 
-    for i in range(len(df) - 15):
-        # Kicsit lazább feltételek, hogy több jelzés legyen
-        buy_cond = (
-            (df.at[i, "EMA8"] >= df.at[i, "EMA21"]) and
-            (df.at[i, "RSI"] < 75) and
-            (df.at[i, "MACD_Hist"] > 0) and
-            (df.at[i, "ADX"] > ADX_THRESHOLD) and
-            (df.at[i, "close"] <= df.at[i, "BB_Low"] * 1.02)  # Kicsit megengedőbb alsó Bollinger körül
-        )
-        sell_cond = (
-            (df.at[i, "EMA8"] <= df.at[i, "EMA21"]) and
-            (df.at[i, "RSI"] > 25) and
-            (df.at[i, "MACD_Hist"] < 0) and
-            (df.at[i, "ADX"] > ADX_THRESHOLD) and
-            (df.at[i, "close"] >= df.at[i, "BB_High"] * 0.98)  # Kicsit megengedőbb felső Bollinger körül
-        )
-
+    for i in range(len(df) - LOOKAHEAD):
         price = df.at[i, "close"]
 
-        if buy_cond:
-            df.at[i, "Buy"] = True
+        if df.at[i, "Buy"]:
             tp = price * (1 + TP_PCT)
             sl = price * (1 - SL_PCT)
             df.at[i, "TP"] = tp
             df.at[i, "SL"] = sl
-
-            eredmeny = ""
-            for j in range(1, 16):
-                if i + j >= len(df):
-                    break
+            for j in range(1, LOOKAHEAD + 1):
                 high = df.at[i + j, "high"]
                 low = df.at[i + j, "low"]
                 if high >= tp:
-                    eredmeny = "TP"
+                    df.at[i, "Eredmény"] = "TP"
                     break
                 elif low <= sl:
-                    eredmeny = "SL"
+                    df.at[i, "Eredmény"] = "SL"
                     break
-            df.at[i, "Eredmény"] = eredmeny if eredmeny else "Semmi"
+            if df.at[i, "Eredmény"] == "":
+                df.at[i, "Eredmény"] = "Semmi"
 
-        elif sell_cond:
-            df.at[i, "Sell"] = True
+        elif df.at[i, "Sell"]:
             tp = price * (1 - TP_PCT)
             sl = price * (1 + SL_PCT)
             df.at[i, "TP"] = tp
             df.at[i, "SL"] = sl
-
-            eredmeny = ""
-            for j in range(1, 16):
-                if i + j >= len(df):
-                    break
+            for j in range(1, LOOKAHEAD + 1):
                 high = df.at[i + j, "high"]
                 low = df.at[i + j, "low"]
                 if low <= tp:
-                    eredmeny = "TP"
+                    df.at[i, "Eredmény"] = "TP"
                     break
                 elif high >= sl:
-                    eredmeny = "SL"
+                    df.at[i, "Eredmény"] = "SL"
                     break
-            df.at[i, "Eredmény"] = eredmeny if eredmeny else "Semmi"
+            if df.at[i, "Eredmény"] == "":
+                df.at[i, "Eredmény"] = "Semmi"
 
     return df
 
@@ -143,18 +160,17 @@ def plot_chart(df, symbol):
     fig.add_trace(go.Scatter(x=df["time"], y=df["EMA8"], mode="lines", name="EMA 8", line=dict(color="orange")))
     fig.add_trace(go.Scatter(x=df["time"], y=df["EMA21"], mode="lines", name="EMA 21", line=dict(color="purple")))
 
-    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_High"], mode="lines", name="Bollinger Felső", line=dict(color="cyan", dash="dash")))
-    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Mid"], mode="lines", name="Bollinger Közép", line=dict(color="gray", dash="dot")))
-    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Low"], mode="lines", name="Bollinger Alsó", line=dict(color="cyan", dash="dash")))
+    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Upper"], mode="lines", name="BB Felső szalag", line=dict(color="cyan", dash='dash')))
+    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Lower"], mode="lines", name="BB Alsó szalag", line=dict(color="cyan", dash='dash')))
 
     buy_signals = df[df["Buy"]]
     sell_signals = df[df["Sell"]]
 
     fig.add_trace(go.Scatter(x=buy_signals["time"], y=buy_signals["close"],
-                             mode="markers", name="Vétel", marker=dict(color="green", size=12, symbol="arrow-up")))
+                             mode="markers", name="Vétel", marker=dict(color="green", size=10, symbol="arrow-up")))
 
     fig.add_trace(go.Scatter(x=sell_signals["time"], y=sell_signals["close"],
-                             mode="markers", name="Eladás", marker=dict(color="red", size=12, symbol="arrow-down")))
+                             mode="markers", name="Eladás", marker=dict(color="red", size=10, symbol="arrow-down")))
 
     fig.update_layout(title=f"{symbol} árfolyam és jelek", xaxis_title="Idő", yaxis_title="Ár",
                       xaxis_rangeslider_visible=False, template="plotly_dark")
@@ -162,7 +178,7 @@ def plot_chart(df, symbol):
 
 # ---------------------------- STREAMLIT FELÜLET ----------------------------
 def main():
-    st.title("📈 Forex Scalping Stratégiád – Több jelzés, ADX20, TP/SL finomítva")
+    st.title("📈 Forex Scalping Stratégia – 5m / 15m")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -170,25 +186,4 @@ def main():
     with col2:
         selected_interval = st.selectbox("Válaszd ki az időkeretet:", list(INTERVALS.keys()))
 
-    try:
-        df = load_data(selected_symbol, INTERVALS[selected_interval])
-        df = compute_indicators(df)
-        df = generate_signals(df)
-
-        st.plotly_chart(plot_chart(df, selected_symbol), use_container_width=True)
-
-        st.subheader("📊 Legutóbbi szignálok TP/SL szintekkel")
-        st.dataframe(df[["time", "close", "Buy", "Sell", "TP", "SL", "Eredmény"]].sort_values("time", ascending=False).head(30))
-
-        st.subheader("📈 Szignálok statisztika az utolsó 100 jelzésből")
-        signals = df[(df["Buy"] | df["Sell"])].sort_values("time", ascending=False).head(100)
-        tp_ratio = (signals["Eredmény"] == "TP").mean() * 100
-        sl_ratio = (signals["Eredmény"] == "SL").mean() * 100
-        st.metric("✅ TP arány", f"{tp_ratio:.2f}%")
-        st.metric("❌ SL arány", f"{sl_ratio:.2f}%")
-
-    except Exception as e:
-        st.error(f"Hiba történt: {str(e)}")
-
-if __name__ == "__main__":
-    main()
+    # Eltároljuk az előző jelzést session state-ben, hogy tudjuk, mik
