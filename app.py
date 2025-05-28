@@ -16,9 +16,9 @@ SYMBOLS = [
 ]
 INTERVALS = {"5 perc": "5min", "15 perc": "15min"}
 
-TP_PCT = 0.02  # Take Profit 2%
-SL_PCT = 0.01  # Stop Loss 1%
-ADX_THRESHOLD = 25  # ADX threshold
+TP_PCT = 0.008  # Take Profit 0.8%
+SL_PCT = 0.005  # Stop Loss 0.5%
+ADX_THRESHOLD = 20  # ADX threshold
 
 # ---------------------------- ADATBETÖLTÉS ----------------------------
 @st.cache_data(ttl=300)
@@ -67,22 +67,21 @@ def generate_signals(df):
     df["SL"] = np.nan
     df["Eredmény"] = ""
 
-    for i in range(len(df) - 5):
-        # Feltételek vételhez:
+    for i in range(len(df) - 15):
+        # Kicsit lazább feltételek, hogy több jelzés legyen
         buy_cond = (
-            (df.at[i, "EMA8"] > df.at[i, "EMA21"]) and
-            (df.at[i, "RSI"] < 70) and
+            (df.at[i, "EMA8"] >= df.at[i, "EMA21"]) and
+            (df.at[i, "RSI"] < 75) and
             (df.at[i, "MACD_Hist"] > 0) and
             (df.at[i, "ADX"] > ADX_THRESHOLD) and
-            (df.at[i, "close"] < df.at[i, "BB_Low"])  # Ár a Bollinger alsó sávja alatt - erős vételi jelzés
+            (df.at[i, "close"] <= df.at[i, "BB_Low"] * 1.02)  # Kicsit megengedőbb alsó Bollinger körül
         )
-        # Feltételek eladáshoz:
         sell_cond = (
-            (df.at[i, "EMA8"] < df.at[i, "EMA21"]) and
-            (df.at[i, "RSI"] > 30) and
+            (df.at[i, "EMA8"] <= df.at[i, "EMA21"]) and
+            (df.at[i, "RSI"] > 25) and
             (df.at[i, "MACD_Hist"] < 0) and
             (df.at[i, "ADX"] > ADX_THRESHOLD) and
-            (df.at[i, "close"] > df.at[i, "BB_High"])  # Ár a Bollinger felső sávja felett - erős eladási jelzés
+            (df.at[i, "close"] >= df.at[i, "BB_High"] * 0.98)  # Kicsit megengedőbb felső Bollinger körül
         )
 
         price = df.at[i, "close"]
@@ -94,9 +93,10 @@ def generate_signals(df):
             df.at[i, "TP"] = tp
             df.at[i, "SL"] = sl
 
-            # 5 következő gyertyán vizsgáljuk TP/SL teljesülését
             eredmeny = ""
-            for j in range(1, 6):
+            for j in range(1, 16):
+                if i + j >= len(df):
+                    break
                 high = df.at[i + j, "high"]
                 low = df.at[i + j, "low"]
                 if high >= tp:
@@ -115,7 +115,9 @@ def generate_signals(df):
             df.at[i, "SL"] = sl
 
             eredmeny = ""
-            for j in range(1, 6):
+            for j in range(1, 16):
+                if i + j >= len(df):
+                    break
                 high = df.at[i + j, "high"]
                 low = df.at[i + j, "low"]
                 if low <= tp:
@@ -160,7 +162,7 @@ def plot_chart(df, symbol):
 
 # ---------------------------- STREAMLIT FELÜLET ----------------------------
 def main():
-    st.title("📈 Forex Scalping Stratégia – 5m / 15m")
+    st.title("📈 Forex Scalping Stratégiád – Több jelzés, ADX20, TP/SL finomítva")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -176,7 +178,7 @@ def main():
         st.plotly_chart(plot_chart(df, selected_symbol), use_container_width=True)
 
         st.subheader("📊 Legutóbbi szignálok TP/SL szintekkel")
-        st.dataframe(df[["time", "close", "Buy", "Sell", "TP", "SL", "Eredmény"]].sort_values("time", ascending=False).head(20))
+        st.dataframe(df[["time", "close", "Buy", "Sell", "TP", "SL", "Eredmény"]].sort_values("time", ascending=False).head(30))
 
         st.subheader("📈 Szignálok statisztika az utolsó 100 jelzésből")
         signals = df[(df["Buy"] | df["Sell"])].sort_values("time", ascending=False).head(100)
