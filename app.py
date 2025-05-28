@@ -2,10 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import datetime
 import plotly.graph_objects as go
 from ta.trend import ADXIndicator
-from ta.volatility import BollingerBands
 
 # ---------------------------- BEÁLLÍTÁSOK ----------------------------
 API_KEY = "bb8600ae3e1b41acac22ce8558f5e2e1"
@@ -53,11 +51,11 @@ def compute_indicators(df):
     adx = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=14)
     df["ADX"] = adx.adx()
 
-    # Bollinger szalagok
-    bb_indicator = BollingerBands(close=df["close"], window=20, window_dev=2)
-    df["bb_middle"] = bb_indicator.bollinger_mavg()
-    df["bb_upper"] = bb_indicator.bollinger_hband()
-    df["bb_lower"] = bb_indicator.bollinger_lband()
+    # Bollinger szalagok (20 periódus, 2 szórás)
+    df["bb_middle"] = df["close"].rolling(window=20).mean()
+    df["bb_std"] = df["close"].rolling(window=20).std()
+    df["bb_upper"] = df["bb_middle"] + 2 * df["bb_std"]
+    df["bb_lower"] = df["bb_middle"] - 2 * df["bb_std"]
 
     return df
 
@@ -70,15 +68,13 @@ def generate_signals(df):
         (df["EMA8"] > df["EMA21"]) &
         (df["RSI"] < 70) &
         (df["MACD_Hist"] > 0) &
-        (df["ADX"] > 30) &
-        (df["close"] < df["bb_lower"])
+        (df["ADX"] > 25)
     )
     df["Sell"] = (
         (df["EMA8"] < df["EMA21"]) &
         (df["RSI"] > 30) &
         (df["MACD_Hist"] < 0) &
-        (df["ADX"] > 30) &
-        (df["close"] > df["bb_upper"])
+        (df["ADX"] > 25)
     )
 
     df["TP"] = np.nan
@@ -124,63 +120,4 @@ def generate_signals(df):
 
     return df
 
-# ---------------------------- GRAFIKON ----------------------------
-def plot_chart(df, symbol):
-    fig = go.Figure()
-
-    fig.add_trace(go.Candlestick(
-        x=df["time"],
-        open=df["open"], high=df["high"],
-        low=df["low"], close=df["close"],
-        name="Ár"
-    ))
-    fig.add_trace(go.Scatter(x=df["time"], y=df["EMA8"], mode="lines", name="EMA 8", line=dict(color="orange")))
-    fig.add_trace(go.Scatter(x=df["time"], y=df["EMA21"], mode="lines", name="EMA 21", line=dict(color="purple")))
-
-    buy_signals = df[df["Buy"]]
-    sell_signals = df[df["Sell"]]
-
-    fig.add_trace(go.Scatter(x=buy_signals["time"], y=buy_signals["close"],
-                             mode="markers", name="Vétel", marker=dict(color="green", size=10, symbol="arrow-up")))
-
-    fig.add_trace(go.Scatter(x=sell_signals["time"], y=sell_signals["close"],
-                             mode="markers", name="Eladás", marker=dict(color="red", size=10, symbol="arrow-down")))
-
-    fig.update_layout(title=f"{symbol} árfolyam és jelek", xaxis_title="Idő", yaxis_title="Ár",
-                      xaxis_rangeslider_visible=False, template="plotly_dark")
-    return fig
-
-# ---------------------------- STREAMLIT FELÜLET ----------------------------
-def main():
-    st.title("📈 Forex Scalping Stratégia – 5m / 15m")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_symbol = st.selectbox("Válaszd ki a devizapárt:", SYMBOLS)
-    with col2:
-        selected_interval = st.selectbox("Válaszd ki az időkeretet:", list(INTERVALS.keys()))
-
-    try:
-        df = load_data(selected_symbol, INTERVALS[selected_interval])
-        df = compute_indicators(df)
-        df = generate_signals(df)
-
-        st.plotly_chart(plot_chart(df, selected_symbol), use_container_width=True)
-
-        st.subheader("📊 Legutóbbi szignálok TP/SL szintekkel")
-        st.dataframe(df[["time", "close", "Buy", "Sell", "TP", "SL"]].sort_values("time", ascending=False).head(10))
-
-        st.subheader("📈 Utolsó 100 szignál eredménye")
-        signals = df[df["Buy"] | df["Sell"]].sort_values("time", ascending=False).head(100)
-        st.dataframe(signals[["time", "close", "Buy", "Sell", "TP", "SL", "Eredmény"]])
-
-        tp_ratio = (signals["Eredmény"] == "TP").mean() * 100
-        sl_ratio = (signals["Eredmény"] == "SL").mean() * 100
-        st.metric("✅ TP arány", f"{tp_ratio:.2f}%")
-        st.metric("❌ SL arány", f"{sl_ratio:.2f}%")
-
-    except Exception as e:
-        st.error(f"Hiba történt: {str(e)}")
-
-if __name__ == "__main__":
-    main()
+#
