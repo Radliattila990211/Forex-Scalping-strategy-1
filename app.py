@@ -53,11 +53,11 @@ def compute_indicators(df):
     adx = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=14)
     df["ADX"] = adx.adx()
 
-    # Bollinger szalagok számítása
-    bb_indicator = BollingerBands(close=df["close"], window=20, window_dev=2)
-    df["BB_Middle"] = bb_indicator.bollinger_mavg()
-    df["BB_Upper"] = bb_indicator.bollinger_hband()
-    df["BB_Lower"] = bb_indicator.bollinger_lband()
+    # Bollinger-szalag (20 periódus, 2 szórás)
+    bb = BollingerBands(close=df["close"], window=20, window_dev=2)
+    df["BB_Middle"] = bb.bollinger_mavg()
+    df["BB_Upper"] = bb.bollinger_hband()
+    df["BB_Lower"] = bb.bollinger_lband()
 
     return df
 
@@ -65,11 +65,10 @@ def compute_indicators(df):
 def generate_signals(df):
     TP_PCT = 0.02  # 2%
     SL_PCT = 0.01  # 1%
-    ADX_THRESHOLD = 25  # itt változott az érték
+    ADX_THRESHOLD = 20
 
-    df["Buy"] = (df["EMA8"] > df["EMA21"]) & (df["RSI"] < 70) & (df["MACD_Hist"] > 0) & (df["ADX"] > ADX_THRESHOLD) & (df["close"] < df["BB_Lower"])
-    df["Sell"] = (df["EMA8"] < df["EMA21"]) & (df["RSI"] > 30) & (df["MACD_Hist"] < 0) & (df["ADX"] > ADX_THRESHOLD) & (df["close"] > df["BB_Upper"])
-
+    df["Buy"] = False
+    df["Sell"] = False
     df["TP"] = np.nan
     df["SL"] = np.nan
     df["Eredmény"] = ""
@@ -77,11 +76,30 @@ def generate_signals(df):
     for i in range(len(df) - 5):
         price = df.at[i, "close"]
 
-        if df.at[i, "Buy"]:
+        # Feltételek vételre:
+        buy_cond = (
+            (df.at[i, "EMA8"] > df.at[i, "EMA21"]) and
+            (df.at[i, "RSI"] < 80) and
+            (df.at[i, "MACD_Hist"] > 0) and
+            (df.at[i, "ADX"] > ADX_THRESHOLD) and
+            (price <= df.at[i, "BB_Lower"] * 1.01)  # ár a Bollinger alsó szalag alatt vagy nagyon közel
+        )
+        # Feltételek eladásra:
+        sell_cond = (
+            (df.at[i, "EMA8"] < df.at[i, "EMA21"]) and
+            (df.at[i, "RSI"] > 20) and
+            (df.at[i, "MACD_Hist"] < 0) and
+            (df.at[i, "ADX"] > ADX_THRESHOLD) and
+            (price >= df.at[i, "BB_Upper"] * 0.99)  # ár a Bollinger felső szalag felett vagy nagyon közel
+        )
+
+        if buy_cond:
+            df.at[i, "Buy"] = True
             tp = price * (1 + TP_PCT)
             sl = price * (1 - SL_PCT)
             df.at[i, "TP"] = tp
             df.at[i, "SL"] = sl
+            # Vizsgáljuk az ármozgást az elkövetkező 5 gyertyán belül
             for j in range(1, 6):
                 high = df.at[i + j, "high"]
                 low = df.at[i + j, "low"]
@@ -94,7 +112,8 @@ def generate_signals(df):
             if df.at[i, "Eredmény"] == "":
                 df.at[i, "Eredmény"] = "Semmi"
 
-        elif df.at[i, "Sell"]:
+        elif sell_cond:
+            df.at[i, "Sell"] = True
             tp = price * (1 - TP_PCT)
             sl = price * (1 + SL_PCT)
             df.at[i, "TP"] = tp
@@ -126,6 +145,11 @@ def plot_chart(df, symbol):
     fig.add_trace(go.Scatter(x=df["time"], y=df["EMA8"], mode="lines", name="EMA 8", line=dict(color="orange")))
     fig.add_trace(go.Scatter(x=df["time"], y=df["EMA21"], mode="lines", name="EMA 21", line=dict(color="purple")))
 
+    # Bollinger-szalagok megjelenítése
+    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Upper"], mode="lines", name="BB Felső szalag", line=dict(color="blue", dash="dash")))
+    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Middle"], mode="lines", name="BB Közép szalag", line=dict(color="blue", dash="dot")))
+    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Lower"], mode="lines", name="BB Alsó szalag", line=dict(color="blue", dash="dash")))
+
     buy_signals = df[df["Buy"]]
     sell_signals = df[df["Sell"]]
 
@@ -134,11 +158,6 @@ def plot_chart(df, symbol):
 
     fig.add_trace(go.Scatter(x=sell_signals["time"], y=sell_signals["close"],
                              mode="markers", name="Eladás", marker=dict(color="red", size=10, symbol="arrow-down")))
-
-    # Bollinger szalagok megjelenítése
-    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Middle"], mode="lines", name="Bollinger Közép", line=dict(color="yellow", dash="dash")))
-    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Upper"], mode="lines", name="Bollinger Felső", line=dict(color="red", dash="dot")))
-    fig.add_trace(go.Scatter(x=df["time"], y=df["BB_Lower"], mode="lines", name="Bollinger Alsó", line=dict(color="green", dash="dot")))
 
     fig.update_layout(title=f"{symbol} árfolyam és jelek", xaxis_title="Idő", yaxis_title="Ár",
                       xaxis_rangeslider_visible=False, template="plotly_dark")
@@ -174,7 +193,7 @@ def main():
         st.metric("❌ SL arány", f"{sl_ratio:.2f}%")
 
     except Exception as e:
-        st.error(f"Hiba történt: {e}")
+        st.error(f"Hiba történt: {str(e)}")
 
 if __name__ == "__main__":
     main()
