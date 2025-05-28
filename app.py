@@ -13,6 +13,10 @@ SYMBOLS = [
 ]
 INTERVALS = {"5 perc": "5min", "15 perc": "15min"}
 
+# TP és SL százalékban
+TP_PCT = 0.008  # 0.8%
+SL_PCT = 0.005  # 0.5%
+
 # ---------------------------- ADATBETÖLTÉS ----------------------------
 @st.cache_data(ttl=300)
 def load_data(symbol, interval):
@@ -43,12 +47,13 @@ def compute_indicators(df):
 
     return df
 
-# ---------------------------- SZIGNÁL GENERÁLÁS ----------------------------
+# ---------------------------- SZIGNÁL GENERÁLÁS TP/SL-vel ----------------------------
 def generate_signals(df):
     df["Buy"] = False
     df["Sell"] = False
+    df["TP"] = np.nan
+    df["SL"] = np.nan
 
-    # Jelzések logikája:
     for i in range(1, len(df)):
         price = df.at[i, "close"]
         ema50 = df.at[i, "EMA50"]
@@ -56,23 +61,24 @@ def generate_signals(df):
         stochastic_k = df.at[i, "%K"]
         stochastic_d = df.at[i, "%D"]
 
-        # Árkörnyezet: ár legyen az EMA-k +/- 0.2%-án belül
+        # Ár legyen az EMA-k +/- 0.2%-án belül
         ema_mid = (ema50 + ema100) / 2
         tol = ema_mid * 0.002  # 0.2% tűrés
-
         close_near_ema = (price >= (ema_mid - tol)) and (price <= (ema_mid + tol))
 
         # Long belépő feltételek
         if (ema50 > ema100) and close_near_ema:
-            # Stochastic kereszt felfelé 20-as szintnél
             if stochastic_k > 20 and stochastic_d > 20 and stochastic_k > stochastic_d:
                 df.at[i, "Buy"] = True
+                df.at[i, "TP"] = price * (1 + TP_PCT)
+                df.at[i, "SL"] = price * (1 - SL_PCT)
 
         # Short belépő feltételek
         elif (ema50 < ema100) and close_near_ema:
-            # Stochastic kereszt lefelé 80-as szint alatt
             if stochastic_k < 80 and stochastic_d < 80 and stochastic_k < stochastic_d:
                 df.at[i, "Sell"] = True
+                df.at[i, "TP"] = price * (1 - TP_PCT)
+                df.at[i, "SL"] = price * (1 + SL_PCT)
 
     return df
 
@@ -103,7 +109,7 @@ def plot_chart(df, symbol):
 
 # ---------------------------- STREAMLIT FELÜLET ----------------------------
 def main():
-    st.title("📈 Forex Scalping Stratégia – EMA & Stochastic")
+    st.title("📈 Forex Scalping Stratégia – EMA & Stochastic + TP/SL")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -118,12 +124,18 @@ def main():
 
         st.plotly_chart(plot_chart(df, selected_symbol), use_container_width=True)
 
-        st.subheader("📊 Legutóbbi szignálok")
-        szignalok = df[(df["Buy"]) | (df["Sell"])].sort_values("time", ascending=False)
+        st.subheader("📊 Utolsó 20 szignál TP/SL szintekkel")
+        szignalok = df[(df["Buy"]) | (df["Sell"])].sort_values("time", ascending=False).head(20)
         if szignalok.empty:
             st.write("Nincs jelenleg szignál.")
         else:
-            st.dataframe(szingalok[["time", "close", "Buy", "Sell"]].head(20))
+            # Oszlopok: idő, ár, Buy, Sell, TP, SL
+            szignalok_display = szignalok[["time", "close", "Buy", "Sell", "TP", "SL"]].copy()
+            szignalok_display["Buy"] = szignalok_display["Buy"].apply(lambda x: "Igen" if x else "")
+            szignalok_display["Sell"] = szignalok_display["Sell"].apply(lambda x: "Igen" if x else "")
+            szignalok_display["TP"] = szignalok_display["TP"].apply(lambda x: f"{x:.5f}")
+            szignalok_display["SL"] = szignalok_display["SL"].apply(lambda x: f"{x:.5f}")
+            st.dataframe(szingalok_display)
 
         st.write(f"Összes vételi jel: {df['Buy'].sum()}, összes eladási jel: {df['Sell'].sum()}")
 
