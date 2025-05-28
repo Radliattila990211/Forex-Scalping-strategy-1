@@ -1,129 +1,104 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import requests
-import ta
+import datetime
 import plotly.graph_objects as go
-import urllib.parse
 
-API_KEY = st.secrets["TWELVE_DATA_API_KEY"] if "TWELVE_DATA_API_KEY" in st.secrets else ""
+# ---------------------------- BEÁLLÍTÁSOK ----------------------------
+API_KEY = "demo"  # <- Cseréld ki saját TwelveData API kulcsodra!
+SYMBOLS = [
+    "AUDCAD", "EURUSD", "USDJPY", "GBPUSD", "USDCHF",
+    "AUDUSD", "USDCAD", "NZDUSD", "GBPJPY", "EURJPY", "EURGBP"
+]
+INTERVALS = {"5 perc": "5min", "15 perc": "15min"}
 
-FOREX_PAIRS_API = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD"]
-FOREX_PAIRS_DISPLAY = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD"]
-
+# ---------------------------- ADATBETÖLTÉS ----------------------------
 @st.cache_data(ttl=300)
-def load_forex_data(symbol="EUR/USD"):
-    symbol_encoded = urllib.parse.quote(symbol)  # URL-encode pl. "USD/JPY" -> "USD%2FJPY"
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol_encoded}&interval=5min&apikey={API_KEY}&format=JSON&outputsize=100"
+def load_data(symbol, interval):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize=100"
     response = requests.get(url)
-
-    if response.status_code != 200:
-        st.error(f"Hálózati hiba történt: {response.status_code}")
-        return None
-
     data = response.json()
-
     if "values" not in data:
-        msg = data.get("message", "Ismeretlen hiba az API válaszában.")
-        st.error(f"Nem sikerült adatot lekérni a {symbol} párhoz. Hiba: {msg}")
-        return None
-
+        raise ValueError(f"Hiba az adatok betöltésekor: {data.get('message', 'Ismeretlen hiba')}")
     df = pd.DataFrame(data["values"])
-
-    expected_cols = {"datetime", "open", "high", "low", "close"}
-    missing_cols = expected_cols - set(df.columns)
-    if missing_cols:
-        st.error(f"Hiányzó adat oszlopok az API válaszában: {missing_cols}")
-        return None
-
-    df = df.rename(columns={
-        "datetime": "date",
-        "open": "open",
-        "high": "high",
-        "low": "low",
-        "close": "close",
-    })
-
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values('date').reset_index(drop=True)
-
+    df = df.rename(columns={"datetime": "time"})
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.sort_values("time")
     for col in ["open", "high", "low", "close"]:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df[col] = pd.to_numeric(df[col])
+    return df.reset_index(drop=True)
 
-    if "volume" in df.columns:
-        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-
+# ---------------------------- TECHNIKAI INDIKÁTOROK ----------------------------
+def compute_indicators(df):
+    df["EMA8"] = df["close"].ewm(span=8).mean()
+    df["EMA21"] = df["close"].ewm(span=21).mean()
+    delta = df["close"].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+    exp1 = df["close"].ewm(span=12, adjust=False).mean()
+    exp2 = df["close"].ewm(span=26, adjust=False).mean()
+    df["MACD"] = exp1 - exp2
+    df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+    df["MACD_Hist"] = df["MACD"] - df["Signal"]
     return df
 
-def analyze_and_plot(df, symbol_display):
-    df['EMA8'] = ta.trend.ema_indicator(df['close'], window=8)
-    df['EMA21'] = ta.trend.ema_indicator(df['close'], window=21)
-    df['RSI'] = ta.momentum.rsi(df['close'], window=14)
-    macd = ta.trend.MACD(df['close'], window_slow=26, window_fast=12, window_sign=9)
-    df['MACD'] = macd.macd()
-    df['MACD_signal'] = macd.macd_signal()
-    df['MACD_hist'] = macd.macd_diff()
+# ---------------------------- SZIGNÁL GENERÁLÁS ----------------------------
+def generate_signals(df):
+    df["Buy"] = (df["EMA8"] > df["EMA21"]) & (df["RSI"] < 70) & (df["MACD_Hist"] > 0)
+    df["Sell"] = (df["EMA8"] < df["EMA21"]) & (df["RSI"] > 30) & (df["MACD_Hist"] < 0)
+    return df
 
-    df['signal'] = 0
-    long_condition = (df['EMA8'] > df['EMA21']) & (df['EMA8'].shift(1) <= df['EMA21'].shift(1))
-    long_rsi_condition = df['RSI'] < 70
-    long_macd_condition = df['MACD_hist'] > 0
+# ---------------------------- GRAFIKON ----------------------------
+def plot_chart(df, symbol):
+    fig = go.Figure()
 
-    short_condition = (df['EMA8'] < df['EMA21']) & (df['EMA8'].shift(1) >= df['EMA21'].shift(1))
-    short_rsi_condition = df['RSI'] > 30
-    short_macd_condition = df['MACD_hist'] < 0
+    fig.add_trace(go.Candlestick(
+        x=df["time"],
+        open=df["open"], high=df["high"],
+        low=df["low"], close=df["close"],
+        name="Ár"
+    ))
+    fig.add_trace(go.Scatter(x=df["time"], y=df["EMA8"], mode="lines", name="EMA 8", line=dict(color="orange")))
+    fig.add_trace(go.Scatter(x=df["time"], y=df["EMA21"], mode="lines", name="EMA 21", line=dict(color="purple")))
 
-    df.loc[long_condition & long_rsi_condition & long_macd_condition, 'signal'] = 1
-    df.loc[short_condition & short_rsi_condition & short_macd_condition, 'signal'] = -1
+    buy_signals = df[df["Buy"]]
+    sell_signals = df[df["Sell"]]
 
-    st.subheader(f"Adatok és jelzések: {symbol_display}")
-    st.dataframe(df.tail(15))
+    fig.add_trace(go.Scatter(x=buy_signals["time"], y=buy_signals["close"],
+                             mode="markers", name="Vétel", marker=dict(color="green", size=10, symbol="arrow-up")))
 
-    fig = go.Figure(data=[go.Candlestick(
-        x=df['date'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='Gyertyák'
-    )])
+    fig.add_trace(go.Scatter(x=sell_signals["time"], y=sell_signals["close"],
+                             mode="markers", name="Eladás", marker=dict(color="red", size=10, symbol="arrow-down")))
 
-    fig.add_trace(go.Scatter(x=df['date'], y=df['EMA8'], mode='lines', name='EMA8', line=dict(color='blue')))
-    fig.add_trace(go.Scatter(x=df['date'], y=df['EMA21'], mode='lines', name='EMA21', line=dict(color='orange')))
+    fig.update_layout(title=f"{symbol} árfolyam és jelek", xaxis_title="Idő", yaxis_title="Ár",
+                      xaxis_rangeslider_visible=False, template="plotly_dark")
+    return fig
 
-    buys = df[df['signal'] == 1]
-    sells = df[df['signal'] == -1]
-
-    fig.add_trace(go.Scatter(x=buys['date'], y=buys['close'], mode='markers',
-                             marker=dict(symbol='triangle-up', size=15, color='green'), name='Vételi jelzés'))
-    fig.add_trace(go.Scatter(x=sells['date'], y=sells['close'], mode='markers',
-                             marker=dict(symbol='triangle-down', size=15, color='red'), name='Eladási jelzés'))
-
-    fig.update_layout(xaxis_rangeslider_visible=False, template='plotly_dark', height=600)
-
-    st.plotly_chart(fig, use_container_width=True)
-
+# ---------------------------- STREAMLIT FELÜLET ----------------------------
 def main():
-    st.title("Élő Forex Skalpolási Stratégia (5 perc)")
+    st.title("📈 Forex Scalping Stratégia – 5m / 15m")
 
-    selected_display = st.multiselect(
-        "Válassz forex pár(oka)t a következők közül:",
-        FOREX_PAIRS_DISPLAY,
-        default=["EUR/USD"]
-    )
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_symbol = st.selectbox("Válaszd ki a devizapárt:", SYMBOLS)
+    with col2:
+        selected_interval = st.selectbox("Válaszd ki az időkeretet:", list(INTERVALS.keys()))
 
-    if not selected_display:
-        st.warning("Legalább egy forex párat válassz ki.")
-        return
+    try:
+        df = load_data(selected_symbol, INTERVALS[selected_interval])
+        df = compute_indicators(df)
+        df = generate_signals(df)
 
-    for symbol_display in selected_display:
-        symbol_api = FOREX_PAIRS_API[FOREX_PAIRS_DISPLAY.index(symbol_display)]
-        df = load_forex_data(symbol_api)
-        if df is None or df.empty:
-            st.warning(f"Nincs elérhető adat a {symbol_display} párhoz.")
-            continue
-        analyze_and_plot(df, symbol_display)
-
-    st.info("Az adatok 5 percenként frissülnek az API korlátok miatt.")
+        st.plotly_chart(plot_chart(df, selected_symbol), use_container_width=True)
+        st.subheader("📊 Legutóbbi szignálok")
+        st.dataframe(df[["time", "close", "Buy", "Sell"]].sort_values("time", ascending=False).head(10))
+    except Exception as e:
+        st.error(f"Hiba történt: {str(e)}")
 
 if __name__ == "__main__":
     main()
