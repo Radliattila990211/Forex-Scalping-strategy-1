@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,8 +9,8 @@ import plotly.graph_objects as go
 # ---------------------------- BEÁLLÍTÁSOK ----------------------------
 API_KEY = "demo"  # <- Cseréld ki saját TwelveData API kulcsodra!
 SYMBOLS = [
-    "AUDCAD", "EURUSD", "USDJPY", "GBPUSD", "USDCHF",
-    "AUDUSD", "USDCAD", "NZDUSD", "GBPJPY", "EURJPY", "EURGBP"
+    "EURUSD", "USDJPY", "GBPUSD", "USDCHF",
+    "AUDUSD", "USDCAD", "NZDUSD", "EURJPY"
 ]
 INTERVALS = {"5 perc": "5min", "15 perc": "15min"}
 
