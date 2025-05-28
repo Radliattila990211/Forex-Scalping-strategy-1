@@ -54,7 +54,7 @@ def compute_indicators(df):
 
     return df
 
-# ---------------------------- SZIGNÁL GENERÁLÁS + TP/SL ----------------------------
+# ---------------------------- SZIGNÁL GENERÁLÁS + TP/SL ÉRTÉKELÉS ----------------------------
 def generate_signals(df):
     TP_PCT = 0.002  # 0.2%
     SL_PCT = 0.001  # 0.1%
@@ -64,15 +64,45 @@ def generate_signals(df):
 
     df["TP"] = np.nan
     df["SL"] = np.nan
+    df["Eredmény"] = ""
 
-    for i in range(len(df)):
+    for i in range(len(df) - 5):
         price = df.at[i, "close"]
+
         if df.at[i, "Buy"]:
-            df.at[i, "TP"] = price * (1 + TP_PCT)
-            df.at[i, "SL"] = price * (1 - SL_PCT)
+            tp = price * (1 + TP_PCT)
+            sl = price * (1 - SL_PCT)
+            df.at[i, "TP"] = tp
+            df.at[i, "SL"] = sl
+            for j in range(1, 6):
+                high = df.at[i + j, "high"]
+                low = df.at[i + j, "low"]
+                if high >= tp:
+                    df.at[i, "Eredmény"] = "TP"
+                    break
+                elif low <= sl:
+                    df.at[i, "Eredmény"] = "SL"
+                    break
+            if df.at[i, "Eredmény"] == "":
+                df.at[i, "Eredmény"] = "Semmi"
+
         elif df.at[i, "Sell"]:
-            df.at[i, "TP"] = price * (1 - TP_PCT)
-            df.at[i, "SL"] = price * (1 + SL_PCT)
+            tp = price * (1 - TP_PCT)
+            sl = price * (1 + SL_PCT)
+            df.at[i, "TP"] = tp
+            df.at[i, "SL"] = sl
+            for j in range(1, 6):
+                high = df.at[i + j, "high"]
+                low = df.at[i + j, "low"]
+                if low <= tp:
+                    df.at[i, "Eredmény"] = "TP"
+                    break
+                elif high >= sl:
+                    df.at[i, "Eredmény"] = "SL"
+                    break
+            if df.at[i, "Eredmény"] == "":
+                df.at[i, "Eredmény"] = "Semmi"
+
     return df
 
 # ---------------------------- GRAFIKON ----------------------------
@@ -117,11 +147,21 @@ def main():
         df = generate_signals(df)
 
         st.plotly_chart(plot_chart(df, selected_symbol), use_container_width=True)
+
         st.subheader("📊 Legutóbbi szignálok TP/SL szintekkel")
         st.dataframe(df[["time", "close", "Buy", "Sell", "TP", "SL"]].sort_values("time", ascending=False).head(10))
+
+        st.subheader("📈 Utolsó 100 szignál eredménye")
+        signals = df[df["Buy"] | df["Sell"]].sort_values("time", ascending=False).head(100)
+        st.dataframe(signals[["time", "close", "Buy", "Sell", "TP", "SL", "Eredmény"]])
+
+        tp_ratio = (signals["Eredmény"] == "TP").mean() * 100
+        sl_ratio = (signals["Eredmény"] == "SL").mean() * 100
+        st.metric("✅ TP arány", f"{tp_ratio:.2f}%")
+        st.metric("❌ SL arány", f"{sl_ratio:.2f}%")
+
     except Exception as e:
         st.error(f"Hiba történt: {str(e)}")
 
 if __name__ == "__main__":
     main()
-
