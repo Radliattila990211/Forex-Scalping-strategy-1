@@ -7,7 +7,7 @@ import datetime
 import plotly.graph_objects as go
 
 # ---------------------------- BEÁLLÍTÁSOK ----------------------------
-API_KEY = "demo"  # <- Cseréld ki saját TwelveData API kulcsodra!
+API_KEY = "bb8600ae3e1b41acac22ce8558f5e2e1"  # <- Cseréld ki saját TwelveData API kulcsodra!
 SYMBOLS = [
     "EURUSD", "USDJPY", "GBPUSD", "USDCHF",
     "AUDUSD", "USDCAD", "NZDUSD", "EURJPY"
