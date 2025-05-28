@@ -1,11 +1,10 @@
-
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
 import datetime
 import plotly.graph_objects as go
+from ta.trend import ADXIndicator
 
 # ---------------------------- BEÁLLÍTÁSOK ----------------------------
 API_KEY = "bb8600ae3e1b41acac22ce8558f5e2e1"
@@ -35,6 +34,7 @@ def load_data(symbol, interval):
 def compute_indicators(df):
     df["EMA8"] = df["close"].ewm(span=8).mean()
     df["EMA21"] = df["close"].ewm(span=21).mean()
+
     delta = df["close"].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -42,17 +42,37 @@ def compute_indicators(df):
     avg_loss = loss.rolling(14).mean()
     rs = avg_gain / avg_loss
     df["RSI"] = 100 - (100 / (1 + rs))
+
     exp1 = df["close"].ewm(span=12, adjust=False).mean()
     exp2 = df["close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = exp1 - exp2
     df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["Signal"]
+
+    adx = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=14)
+    df["ADX"] = adx.adx()
+
     return df
 
-# ---------------------------- SZIGNÁL GENERÁLÁS ----------------------------
+# ---------------------------- SZIGNÁL GENERÁLÁS + TP/SL ----------------------------
 def generate_signals(df):
-    df["Buy"] = (df["EMA8"] > df["EMA21"]) & (df["RSI"] < 70) & (df["MACD_Hist"] > 0)
-    df["Sell"] = (df["EMA8"] < df["EMA21"]) & (df["RSI"] > 30) & (df["MACD_Hist"] < 0)
+    TP_PCT = 0.002  # 0.2%
+    SL_PCT = 0.001  # 0.1%
+
+    df["Buy"] = (df["EMA8"] > df["EMA21"]) & (df["RSI"] < 70) & (df["MACD_Hist"] > 0) & (df["ADX"] > 20)
+    df["Sell"] = (df["EMA8"] < df["EMA21"]) & (df["RSI"] > 30) & (df["MACD_Hist"] < 0) & (df["ADX"] > 20)
+
+    df["TP"] = np.nan
+    df["SL"] = np.nan
+
+    for i in range(len(df)):
+        price = df.at[i, "close"]
+        if df.at[i, "Buy"]:
+            df.at[i, "TP"] = price * (1 + TP_PCT)
+            df.at[i, "SL"] = price * (1 - SL_PCT)
+        elif df.at[i, "Sell"]:
+            df.at[i, "TP"] = price * (1 - TP_PCT)
+            df.at[i, "SL"] = price * (1 + SL_PCT)
     return df
 
 # ---------------------------- GRAFIKON ----------------------------
@@ -97,10 +117,11 @@ def main():
         df = generate_signals(df)
 
         st.plotly_chart(plot_chart(df, selected_symbol), use_container_width=True)
-        st.subheader("📊 Legutóbbi szignálok")
-        st.dataframe(df[["time", "close", "Buy", "Sell"]].sort_values("time", ascending=False).head(10))
+        st.subheader("📊 Legutóbbi szignálok TP/SL szintekkel")
+        st.dataframe(df[["time", "close", "Buy", "Sell", "TP", "SL"]].sort_values("time", ascending=False).head(10))
     except Exception as e:
         st.error(f"Hiba történt: {str(e)}")
 
 if __name__ == "__main__":
     main()
+
